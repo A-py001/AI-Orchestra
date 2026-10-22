@@ -1,0 +1,47 @@
+# ==========================================
+# Git Ignore for AI Orchestra
+# ==========================================
+
+# Secrets & Environment variables (NEVER COMMIT)
+.env
+.env.local
+.env.*.local
+!.env.example
+*.pem
+*.key
+credentials.json
+
+# Virtual Environment
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Python cache & compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Generated Output Reports (Contains user queries & findings)
+output/
+*.log
+
+# Distribution & Build
+dist/
+build/
+*.spec
+*.egg-info/
+.eggs/
+
+# IDE & OS-specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
