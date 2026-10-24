@@ -1,6 +1,7 @@
 """
-Interactive Configuration Manager for AI Orchestra v2
-Handles environment setup, API keys, model tier selection, and advanced customization.
+Interactive Configuration Manager for AI Orchestra v2.1
+Handles environment setup, API keys, model tier selection,
+advanced customization, and Local Ollama auto-detection.
 """
 import sys
 if sys.platform == "win32":
@@ -11,11 +12,14 @@ if sys.platform == "win32":
         pass
 
 import os
+from typing import List, Tuple
 from dotenv import load_dotenv, set_key
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
 from rich.table import Table
+
+from tools.ollama_detector import detect_ollama, ensure_ollama_service
 
 console = Console()
 ENV_FILE = ".env"
@@ -39,12 +43,13 @@ MODEL_TIERS = {
     },
 }
 
-def _detect_provider(api_key: str) -> str:
-    if not api_key:
-        return "openai"
-    if api_key.startswith("AIzaSy"):
+def _detect_provider(model_or_key: str) -> str:
+    s = (model_or_key or "").strip()
+    if s.startswith("ollama/") or "ollama" in s.lower():
+        return "ollama"
+    if s.startswith("AIzaSy"):
         return "gemini"
-    if api_key.startswith("gsk_"):
+    if s.startswith("gsk_"):
         return "groq"
     return "openai"
 
@@ -53,39 +58,68 @@ def load_existing_env():
         load_dotenv(ENV_FILE, override=True)
 
 def show_current_config(config: dict):
-    table = Table(title="\U0001f39b\ufe0f Current AI Orchestra Configuration", border_style="cyan")
+    table = Table(title="🎛️ Current AI Orchestra Configuration", border_style="cyan")
     table.add_column("Orchestra Role", style="bold yellow")
     table.add_column("AI Model", style="green")
-    table.add_column("API Key Status", style="magenta")
+    table.add_column("API Key / Endpoint", style="magenta")
 
-    def mask_key(k):
-        if not k:
+    def format_status(role_key: str, key_val: str, base_url_val: str = ""):
+        m = config.get(role_key, "")
+        if "ollama" in m.lower():
+            url_hint = base_url_val or "http://localhost:11434"
+            return f"[bold green]Local ({url_hint})[/bold green]"
+        if not key_val:
             return "[red]Not Set[/red]"
-        if len(k) <= 8:
+        if len(key_val) <= 8:
             return "[green]Configured[/green]"
-        return f"[green]{k[:4]}...{k[-4:]}[/green]"
+        return f"[green]{key_val[:4]}...{key_val[-4:]}[/green]"
 
-    table.add_row("\U0001f3bb 1. Searcher Agent (Researcher)", config.get("SEARCH_MODEL", "-"), mask_key(config.get("SEARCH_API_KEY", "")))
-    table.add_row("\U0001f3b9 2. Problem Solver Agent (Soloist)", config.get("SOLVER_MODEL", "-"), mask_key(config.get("SOLVER_API_KEY", "")))
-    table.add_row("\U0001f3ba 3. Writer Agent (Master Scribe)", config.get("WRITER_MODEL", "-"), mask_key(config.get("WRITER_API_KEY", "")))
+    table.add_row(
+        "🎻 1. Searcher Agent (Researcher)",
+        config.get("SEARCH_MODEL", "-"),
+        format_status("SEARCH_MODEL", config.get("SEARCH_API_KEY", ""), config.get("SEARCH_BASE_URL", ""))
+    )
+    table.add_row(
+        "🎹 2. Problem Solver Agent (Soloist)",
+        config.get("SOLVER_MODEL", "-"),
+        format_status("SOLVER_MODEL", config.get("SOLVER_API_KEY", ""), config.get("SOLVER_BASE_URL", ""))
+    )
+    table.add_row(
+        "🎺 3. Writer Agent (Master Scribe)",
+        config.get("WRITER_MODEL", "-"),
+        format_status("WRITER_MODEL", config.get("WRITER_API_KEY", ""), config.get("WRITER_BASE_URL", ""))
+    )
+
+    # Ollama Auto-Detection Badge
+    is_active, detected_models = detect_ollama()
+    if is_active:
+        m_str = ", ".join(detected_models[:3]) if detected_models else "None loaded"
+        if len(detected_models) > 3:
+            m_str += f" (+{len(detected_models) - 3} more)"
+        table.add_row("🦙 Local Ollama Service", f"[bold green]Online ({m_str})[/bold green]", "[green]Auto-Detected[/green]")
+    elif detected_models:
+        m_str = ", ".join(detected_models[:3])
+        table.add_row("🦙 Local Ollama Service", f"[bold yellow]Offline on port 11434 ({m_str})[/bold yellow]", "[yellow]Auto-Detected[/yellow]")
+    else:
+        table.add_row("🦙 Local Ollama Service", "[dim]Not Detected[/dim]", "[dim]N/A[/dim]")
 
     search_tool_info = "DuckDuckGo / Free Web Search (Active)"
     if config.get("SERPER_API_KEY"):
-        search_tool_info = f"Google Serper ({mask_key(config['SERPER_API_KEY'])})"
+        search_tool_info = f"Google Serper ({config['SERPER_API_KEY'][:4]}...)"
     elif config.get("TAVILY_API_KEY"):
-        search_tool_info = f"Tavily Search ({mask_key(config['TAVILY_API_KEY'])})"
-    table.add_row("\U0001f310 Web Search Engine", search_tool_info, "[blue]Auto Fallback[/blue]")
+        search_tool_info = f"Tavily Search ({config['TAVILY_API_KEY'][:4]}...)"
+    table.add_row("🌐 Web Search Engine", search_tool_info, "[blue]Auto Fallback[/blue]")
 
     console.print(table)
 
 def _pick_model_tier(provider: str, role_label: str) -> str:
-    """Let the user pick a model tier (light / balanced / heavy / custom) for a given provider."""
+    """Let the user pick a model tier (light / balanced / heavy / custom) for cloud providers."""
     tiers = MODEL_TIERS.get(provider, MODEL_TIERS["openai"])
     console.print(f"\n[bold]  Select model power for {role_label}:[/bold]")
-    console.print(f"    [green]1[/green]) \u26a1 Light / Fast   \u2192 [dim]{tiers['light']}[/dim]")
-    console.print(f"    [green]2[/green]) \u2696\ufe0f  Balanced      \u2192 [dim]{tiers['balanced']}[/dim]")
-    console.print(f"    [green]3[/green]) \U0001f9e0 Heavy / Pro    \u2192 [dim]{tiers['heavy']}[/dim]")
-    console.print(f"    [green]4[/green]) \u270f\ufe0f  Custom (type any model name)")
+    console.print(f"    [green]1[/green]) ⚡ Light / Fast   → [dim]{tiers['light']}[/dim]")
+    console.print(f"    [green]2[/green]) ⚖️  Balanced      → [dim]{tiers['balanced']}[/dim]")
+    console.print(f"    [green]3[/green]) 🧠 Heavy / Pro    → [dim]{tiers['heavy']}[/dim]")
+    console.print(f"    [green]4[/green]) ✍️  Custom (type any model name)")
     tier_choice = Prompt.ask("  Tier", choices=["1", "2", "3", "4"], default="2")
     if tier_choice == "1":
         return tiers["light"]
@@ -94,6 +128,36 @@ def _pick_model_tier(provider: str, role_label: str) -> str:
     elif tier_choice == "4":
         return Prompt.ask("  Enter custom model name")
     return tiers["balanced"]
+
+def _pick_ollama_model(role_label: str, detected_models: List[str]) -> Tuple[str, str]:
+    """
+    Select or input an Ollama model.
+    Returns: (model_name_with_ollama_prefix, base_url)
+    """
+    console.print(f"\n[bold cyan]  Select Local Ollama Model for {role_label}:[/bold cyan]")
+    choices = []
+    if detected_models:
+        console.print("[dim]  Detected local models on your machine:[/dim]")
+        for i, m in enumerate(detected_models, 1):
+            choices.append(str(i))
+            rec_tag = " (Recommended)" if i == 1 else ""
+            console.print(f"    [green]{i}[/green]) [bold]{m}[/bold]{rec_tag}")
+        choices.append(str(len(detected_models) + 1))
+        console.print(f"    [green]{len(detected_models) + 1}[/green]) ✍️  Type other model name")
+        
+        pick = Prompt.ask("  Model choice", choices=choices, default="1")
+        idx = int(pick) - 1
+        if idx < len(detected_models):
+            chosen = detected_models[idx]
+        else:
+            chosen = Prompt.ask("  Enter Ollama model name (e.g. llama3.2, mistral, qwen2.5)")
+    else:
+        console.print("[yellow]  No models detected automatically. You can enter your model name:[/yellow]")
+        chosen = Prompt.ask("  Enter Ollama model name (e.g. qwen2.5-coder:7b)", default="qwen2.5-coder:7b")
+
+    clean_model = f"ollama/{chosen}" if not chosen.startswith("ollama/") else chosen
+    base_url = "http://localhost:11434"
+    return clean_model, base_url
 
 def _ask_api_key(prompt_text: str, default_key: str = "") -> str:
     """Prompt for API key cleanly without getpass clipboard eating, showing masked hint."""
@@ -114,8 +178,8 @@ def save_config_to_env(config: dict):
             f.write("# AI Orchestra Environment Variables\n")
     for k, v in config.items():
         if v:
-            set_key(ENV_FILE, k, v)
-            os.environ[k] = v
+            set_key(ENV_FILE, k, str(v))
+            os.environ[k] = str(v)
 
     # Synchronize standard provider environment variables
     main_key = config.get("SEARCH_API_KEY", "") or config.get("SOLVER_API_KEY", "")
@@ -140,10 +204,14 @@ def get_orchestra_config(force_reconfigure: bool = False) -> dict:
     config = {
         "SEARCH_MODEL": os.environ.get("SEARCH_MODEL", "gemini/gemini-3.8-flash"),
         "SEARCH_API_KEY": existing_search_key,
+        "SEARCH_BASE_URL": os.environ.get("SEARCH_BASE_URL", ""),
         "SOLVER_MODEL": os.environ.get("SOLVER_MODEL", "gemini/gemini-3.8-flash"),
         "SOLVER_API_KEY": existing_solver_key,
+        "SOLVER_BASE_URL": os.environ.get("SOLVER_BASE_URL", ""),
         "WRITER_MODEL": os.environ.get("WRITER_MODEL", "gemini/gemini-3.8-flash"),
         "WRITER_API_KEY": existing_writer_key,
+        "WRITER_BASE_URL": os.environ.get("WRITER_BASE_URL", ""),
+        "OLLAMA_BASE_URL": os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"),
         "SERPER_API_KEY": os.environ.get("SERPER_API_KEY", ""),
         "TAVILY_API_KEY": os.environ.get("TAVILY_API_KEY", ""),
     }
@@ -155,30 +223,77 @@ def get_orchestra_config(force_reconfigure: bool = False) -> dict:
             clean_m = m.lower().replace(" ", "-")
             config[model_key] = f"gemini/{clean_m}"
 
-    has_any_keys = bool(config["SEARCH_API_KEY"] and config["SOLVER_API_KEY"] and config["WRITER_API_KEY"])
+    # Determine if already configured (either with cloud keys or local ollama models)
+    has_any_keys = bool(
+        ("ollama" in config["SEARCH_MODEL"].lower() or config["SEARCH_API_KEY"]) and
+        ("ollama" in config["SOLVER_MODEL"].lower() or config["SOLVER_API_KEY"]) and
+        ("ollama" in config["WRITER_MODEL"].lower() or config["WRITER_API_KEY"])
+    )
 
     if has_any_keys and not force_reconfigure:
         show_current_config(config)
         use_saved = Confirm.ask("Do you want to continue with the current saved configuration?", default=True)
         if use_saved:
+            # If using Ollama, ensure service is online
+            if any("ollama" in config[k].lower() for k in ["SEARCH_MODEL", "SOLVER_MODEL", "WRITER_MODEL"]):
+                ensure_ollama_service()
             return config
 
+    # Scan Ollama
+    is_active, detected_models = detect_ollama()
+    ollama_badge = ""
+    if is_active:
+        ollama_badge = f"\n[green]🟢 Local Ollama Online: Found {len(detected_models)} models ({', '.join(detected_models[:2])})[/green]"
+    elif detected_models:
+        ollama_badge = f"\n[yellow]🟡 Local Ollama Detected on disk: Found {len(detected_models)} models ({', '.join(detected_models[:2])})[/yellow]"
+
     console.print(Panel.fit(
-        "[bold cyan]\U0001f3b5 AI Orchestra Setup[/bold cyan]\n"
-        "Configure API keys and models for each orchestra musician.\n"
-        "[dim]Tip: You can specify distinct APIs/models for each role or use a single provider.[/dim]",
+        f"[bold cyan]🎵 AI Orchestra Setup v2.1[/bold cyan]\n"
+        "Configure API keys and models for each orchestra musician."
+        f"{ollama_badge}\n"
+        "[dim]Tip: You can use Cloud models (Gemini/OpenAI), 100% Local Ollama, or a Hybrid mix![/dim]",
         border_style="yellow"
     ))
 
     console.print("\n[bold]Select a configuration mode:[/bold]")
-    console.print("  [bold green]1[/bold green]) \U0001f3bc Full Orchestra Mode (Set custom API Key & Model tier for each role)")
-    console.print("  [bold green]2[/bold green]) \u26a1 Quick OpenAI Mode (One key, choose model tier)")
-    console.print("  [bold green]3[/bold green]) \U0001f537 Quick Google Gemini Mode (One key, choose model tier)")
-    console.print("  [bold green]4[/bold green]) \U0001f680 Quick Groq Mode (One key, choose model tier)")
+    console.print("  [bold green]1[/bold green]) 🎼 Full Orchestra / Hybrid Mode (Choose Cloud or Local Ollama per agent)")
+    console.print("  [bold green]2[/bold green]) ⚡ Quick OpenAI Mode (One key, choose model tier)")
+    console.print("  [bold green]3[/bold green]) 🔷 Quick Google Gemini Mode (One key, choose model tier)")
+    console.print("  [bold green]4[/bold green]) 🚀 Quick Groq Mode (One key, choose model tier)")
+    console.print("  [bold green]5[/bold green]) 🦙 Quick Ollama Local Mode ([bold cyan]100% Free, Offline & Unlimited[/bold cyan])")
 
-    choice = Prompt.ask("Choose mode", choices=["1", "2", "3", "4"], default="3" if "AIzaSy" in existing_search_key else "1")
+    default_choice = "5" if (is_active or detected_models) and not existing_search_key else ("3" if "AIzaSy" in existing_search_key else "1")
+    choice = Prompt.ask("Choose mode", choices=["1", "2", "3", "4", "5"], default=default_choice)
 
-    if choice in ["2", "3", "4"]:
+    if choice == "5":
+        # 100% Local Ollama Mode
+        console.print("\n[bold green]🦙 Initializing Local Ollama Mode...[/bold green]")
+        ensure_ollama_service()
+        _, live_models = detect_ollama()
+        
+        console.print("[dim]Choose an Ollama model for ALL agents:[/dim]")
+        chosen_model, base_url = _pick_ollama_model("all agents", live_models)
+
+        config["SEARCH_MODEL"] = chosen_model
+        config["SEARCH_API_KEY"] = "ollama"
+        config["SEARCH_BASE_URL"] = base_url
+
+        config["SOLVER_MODEL"] = chosen_model
+        config["SOLVER_API_KEY"] = "ollama"
+        config["SOLVER_BASE_URL"] = base_url
+
+        config["WRITER_MODEL"] = chosen_model
+        config["WRITER_API_KEY"] = "ollama"
+        config["WRITER_BASE_URL"] = base_url
+
+        config["OLLAMA_BASE_URL"] = base_url
+
+        if len(live_models) > 1 and Confirm.ask("Do you want to assign different local models to each agent?", default=False):
+            config["SEARCH_MODEL"], config["SEARCH_BASE_URL"] = _pick_ollama_model("🎻 Searcher", live_models)
+            config["SOLVER_MODEL"], config["SOLVER_BASE_URL"] = _pick_ollama_model("🎹 Solver", live_models)
+            config["WRITER_MODEL"], config["WRITER_BASE_URL"] = _pick_ollama_model("🎺 Writer", live_models)
+
+    elif choice in ["2", "3", "4"]:
         provider_map = {"2": "openai", "3": "gemini", "4": "groq"}
         label_map = {"2": "OpenAI", "3": "Google Gemini", "4": "Groq"}
         provider = provider_map[choice]
@@ -189,35 +304,58 @@ def get_orchestra_config(force_reconfigure: bool = False) -> dict:
 
         config["SEARCH_MODEL"] = model
         config["SEARCH_API_KEY"] = key
+        config["SEARCH_BASE_URL"] = ""
+
         config["SOLVER_MODEL"] = model
         config["SOLVER_API_KEY"] = key
+        config["SOLVER_BASE_URL"] = ""
+
         config["WRITER_MODEL"] = model
         config["WRITER_API_KEY"] = key
+        config["WRITER_BASE_URL"] = ""
 
-        # Allow per-agent override
         if Confirm.ask("Do you want to set a different model tier per agent?", default=False):
-            config["SEARCH_MODEL"] = _pick_model_tier(provider, "\U0001f3bb Searcher")
-            config["SOLVER_MODEL"] = _pick_model_tier(provider, "\U0001f3b9 Solver")
-            config["WRITER_MODEL"] = _pick_model_tier(provider, "\U0001f3ba Writer")
+            config["SEARCH_MODEL"] = _pick_model_tier(provider, "🎻 Searcher")
+            config["SOLVER_MODEL"] = _pick_model_tier(provider, "🎹 Solver")
+            config["WRITER_MODEL"] = _pick_model_tier(provider, "🎺 Writer")
+
     else:
-        # Full Orchestra Mode: separate APIs
-        console.print("\n[bold cyan]--- \U0001f3bb Part 1: Searcher Agent ---[/bold cyan]")
-        config["SEARCH_API_KEY"] = _ask_api_key("API Key for Searcher", config["SEARCH_API_KEY"])
-        provider = _detect_provider(config["SEARCH_API_KEY"])
-        config["SEARCH_MODEL"] = _pick_model_tier(provider, "\U0001f3bb Searcher")
+        # Full Orchestra / Hybrid Mode: configure each agent individually
+        _, live_models = detect_ollama()
+        
+        def _configure_individual_agent(role_name: str, default_model: str, default_key: str):
+            console.print(f"\n[bold cyan]--- {role_name} ---[/bold cyan]")
+            console.print("  Select engine:")
+            console.print("    [green]1[/green]) 🔷 Google Gemini")
+            console.print("    [green]2[/green]) ⚡ OpenAI")
+            console.print("    [green]3[/green]) 🚀 Groq")
+            console.print("    [green]4[/green]) 🦙 Local Ollama (Free & Offline)")
+            
+            p_pick = Prompt.ask("  Engine", choices=["1", "2", "3", "4"], default="1")
+            if p_pick == "4":
+                ensure_ollama_service()
+                m_name, b_url = _pick_ollama_model(role_name, live_models)
+                return m_name, "ollama", b_url
+            else:
+                p_map = {"1": "gemini", "2": "openai", "3": "groq"}
+                l_map = {"1": "Google Gemini", "2": "OpenAI", "3": "Groq"}
+                provider = p_map[p_pick]
+                key = _ask_api_key(f"API Key for {l_map[p_pick]}", default_key if not default_key.startswith("ollama") else "")
+                model = _pick_model_tier(provider, role_name)
+                return model, key, ""
 
-        console.print("\n[bold cyan]--- \U0001f3b9 Part 2: Problem Solver Agent ---[/bold cyan]")
-        config["SOLVER_API_KEY"] = _ask_api_key("API Key for Solver", config["SOLVER_API_KEY"] or config["SEARCH_API_KEY"])
-        provider = _detect_provider(config["SOLVER_API_KEY"])
-        config["SOLVER_MODEL"] = _pick_model_tier(provider, "\U0001f3b9 Solver")
-
-        console.print("\n[bold cyan]--- \U0001f3ba Part 3: Writer Agent ---[/bold cyan]")
-        config["WRITER_API_KEY"] = _ask_api_key("API Key for Writer", config["WRITER_API_KEY"] or config["SEARCH_API_KEY"])
-        provider = _detect_provider(config["WRITER_API_KEY"])
-        config["WRITER_MODEL"] = _pick_model_tier(provider, "\U0001f3ba Writer")
+        config["SEARCH_MODEL"], config["SEARCH_API_KEY"], config["SEARCH_BASE_URL"] = _configure_individual_agent(
+            "🎻 Part 1: Searcher Agent", config["SEARCH_MODEL"], config["SEARCH_API_KEY"]
+        )
+        config["SOLVER_MODEL"], config["SOLVER_API_KEY"], config["SOLVER_BASE_URL"] = _configure_individual_agent(
+            "🎹 Part 2: Problem Solver Agent", config["SOLVER_MODEL"], config["SOLVER_API_KEY"]
+        )
+        config["WRITER_MODEL"], config["WRITER_API_KEY"], config["WRITER_BASE_URL"] = _configure_individual_agent(
+            "🎺 Part 3: Writer Agent", config["WRITER_MODEL"], config["WRITER_API_KEY"]
+        )
 
     # Optional Search engine key
-    console.print("\n[bold cyan]--- \U0001f310 Web Search Engine API Key (Optional) ---[/bold cyan]")
+    console.print("\n[bold cyan]--- 🌐 Web Search Engine API Key (Optional) ---[/bold cyan]")
     console.print("[dim]Press Enter to use the free DuckDuckGo search engine.[/dim]")
     serper = Prompt.ask("Google Serper API Key (Optional)", default=config.get("SERPER_API_KEY", "")).strip()
     config["SERPER_API_KEY"] = serper
@@ -229,7 +367,7 @@ def get_orchestra_config(force_reconfigure: bool = False) -> dict:
     save_env = Confirm.ask("Save these settings to .env for future sessions?", default=True)
     if save_env:
         save_config_to_env(config)
-        console.print("[green]\u2714 Configuration saved successfully to .env[/green]\n")
+        console.print("[green]✔ Configuration saved successfully to .env[/green]\n")
 
     return config
 
@@ -237,21 +375,21 @@ def get_orchestra_config(force_reconfigure: bool = False) -> dict:
 # ─── Per-query customization ─────────────────────────────────────────
 DEPTH_PROFILES = {
     "fast": {
-        "label": "\u26a1 Fast",
+        "label": "⚡ Fast",
         "search_count": 3,
         "search_instruction": "Perform a quick, focused search. Return only the top 3 most relevant and credible sources.",
         "solve_instruction": "Provide a direct, concise answer. Skip lengthy derivations; focus on the key conclusion.",
         "write_instruction": "Write a short, punchy executive brief (aim for ~300 words). Include only the essential answer, key evidence, and source links.",
     },
     "balanced": {
-        "label": "\u2696\ufe0f Balanced",
+        "label": "⚖️ Balanced",
         "search_count": 5,
         "search_instruction": "Conduct a thorough multi-source search. Extract 5 credible references with key facts.",
         "solve_instruction": "Analyze step-by-step. Reconcile any conflicting viewpoints using the verified sources.",
         "write_instruction": "Compose a well-structured executive report with Executive Summary, Analysis, Recommendations, and Bibliography.",
     },
     "deep": {
-        "label": "\U0001f52c Deep / Exhaustive",
+        "label": "🔬 Deep / Exhaustive",
         "search_count": 8,
         "search_instruction": "Perform exhaustive, multi-angle research. Cross-verify findings across 8+ authoritative sources. Include academic papers, official standards, and contrarian viewpoints.",
         "solve_instruction": "Apply rigorous first-principles reasoning. Deconstruct every assumption. Present multi-perspective analysis with formal logical structure. Address edge cases and caveats.",
@@ -262,22 +400,22 @@ DEPTH_PROFILES = {
 def get_query_settings() -> dict:
     """Prompt user for per-query customization: thinking depth, filters, output language."""
     console.print(Panel.fit(
-        "[bold cyan]\u2699\ufe0f  Symphony Settings[/bold cyan]\n"
+        "[bold cyan]⚙️  Symphony Settings[/bold cyan]\n"
         "[dim]Configure thinking depth, search filters, and output language for this query.[/dim]",
         border_style="yellow"
     ))
 
     # 1. Thinking Depth
     console.print("\n[bold]Thinking Depth:[/bold]")
-    console.print("  [green]1[/green]) \u26a1 Fast         \u2500 Quick answer, minimal sources, concise report")
-    console.print("  [green]2[/green]) \u2696\ufe0f  Balanced     \u2500 Standard multi-source analysis & structured report")
-    console.print("  [green]3[/green]) \U0001f52c Deep         \u2500 Exhaustive academic-grade research & comprehensive dossier")
+    console.print("  [green]1[/green]) ⚡ Fast         ─ Quick answer, minimal sources, concise report")
+    console.print("  [green]2[/green]) ⚖️  Balanced     ─ Standard multi-source analysis & structured report")
+    console.print("  [green]3[/green]) 🔬 Deep         ─ Exhaustive academic-grade research & comprehensive dossier")
     depth_choice = Prompt.ask("Depth", choices=["1", "2", "3"], default="2")
     depth_map = {"1": "fast", "2": "balanced", "3": "deep"}
     depth = depth_map[depth_choice]
 
     # 2. Search Filters
-    console.print("\n[bold]Search Filters (Optional \u2014 press Enter to skip):[/bold]")
+    console.print("\n[bold]Search Filters (Optional — press Enter to skip):[/bold]")
     domain_filter = Prompt.ask("  Restrict to domains (e.g. [dim].com, .edu, nature.com[/dim])", default="").strip()
     language_filter = Prompt.ask("  Source language code  (e.g. [dim]en, pt, fa, de[/dim] or 'all')", default="all").strip()
     if language_filter.lower() == "all":
@@ -302,6 +440,6 @@ def get_query_settings() -> dict:
     if language_filter:
         summary_parts.append(f"Source Lang: {language_filter}")
     summary_parts.append(f"Output Lang: {output_language}")
-    console.print(f"\n[dim]\u2192 Settings: {' | '.join(summary_parts)}[/dim]")
+    console.print(f"\n[dim]→ Settings: {' | '.join(summary_parts)}[/dim]")
 
     return settings

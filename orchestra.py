@@ -1,4 +1,4 @@
-﻿"""
+"""
 AI Orchestra Conductor v2
 Manages the orchestration of agents, tasks, and Crew execution
 with support for thinking depth, search filters, and output language.
@@ -24,15 +24,18 @@ class AIOrchestra:
         self._setup_environment()
         self.search_llm = self._create_llm(
             model=config.get("SEARCH_MODEL", "gpt-4o-mini"),
-            api_key=config.get("SEARCH_API_KEY", "")
+            api_key=config.get("SEARCH_API_KEY", ""),
+            base_url=config.get("SEARCH_BASE_URL") or config.get("OLLAMA_BASE_URL")
         )
         self.solver_llm = self._create_llm(
             model=config.get("SOLVER_MODEL", "gpt-4o"),
-            api_key=config.get("SOLVER_API_KEY", "")
+            api_key=config.get("SOLVER_API_KEY", ""),
+            base_url=config.get("SOLVER_BASE_URL") or config.get("OLLAMA_BASE_URL")
         )
         self.writer_llm = self._create_llm(
             model=config.get("WRITER_MODEL", "gpt-4o-mini"),
-            api_key=config.get("WRITER_API_KEY", "")
+            api_key=config.get("WRITER_API_KEY", ""),
+            base_url=config.get("WRITER_BASE_URL") or config.get("OLLAMA_BASE_URL")
         )
 
     def _setup_environment(self):
@@ -42,10 +45,17 @@ class AIOrchestra:
         if self.config.get("TAVILY_API_KEY"):
             os.environ["TAVILY_API_KEY"] = self.config["TAVILY_API_KEY"]
 
-    def _create_llm(self, model: str, api_key: str) -> LLM:
-        """Create a CrewAI LLM instance with provider auto-resolution and environment mapping."""
+    def _create_llm(self, model: str, api_key: str, base_url: Optional[str] = None) -> LLM:
+        """Create a CrewAI LLM instance with provider auto-resolution, Ollama local support, and environment mapping."""
         clean_model = model.strip()
         clean_key = api_key.strip() if api_key else ""
+
+        # Local Ollama integration
+        if clean_model.startswith("ollama/") or "ollama" in clean_model.lower() or base_url:
+            resolved_url = base_url or os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+            if not clean_model.startswith("ollama/"):
+                clean_model = f"ollama/{clean_model}"
+            return LLM(model=clean_model, base_url=resolved_url, api_key="ollama")
 
         # Auto-upgrade deprecated Gemini model names
         deprecated_gemini = [
