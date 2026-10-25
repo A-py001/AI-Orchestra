@@ -1,4 +1,4 @@
-﻿"""
+"""
 AI Orchestra MVP v2
 Main Interactive Terminal Application
 With Thinking Depth, Model Tier Selection, and Custom Stage Filters.
@@ -72,6 +72,7 @@ def main():
     parser.add_argument("--reconfigure", action="store_true", help="Reconfigure API keys and models")
     parser.add_argument("--query", type=str, default=None, help="Directly execute a query without interactive loop")
     parser.add_argument("--depth", type=str, choices=["fast", "balanced", "deep"], default=None, help="Thinking depth for --query mode")
+    parser.add_argument("--lang", type=str, default=None, help="Output language for --query mode (e.g. 'fa', 'en', 'es')")
     args = parser.parse_args()
 
     print_welcome()
@@ -94,13 +95,15 @@ def main():
     # 3. Execution Phase
     if args.query:
         from config import DEPTH_PROFILES
+        from tools.language_detector import detect_language
         depth = args.depth or "balanced"
+        lang = args.lang if args.lang else detect_language(args.query.strip())
         settings = {
             "depth": depth,
             "depth_profile": DEPTH_PROFILES[depth],
             "domain_filter": "",
             "language_filter": "",
-            "output_language": "en",
+            "output_language": lang,
         }
         run_orchestra_query(orchestra, args.query.strip(), settings)
         return
@@ -127,7 +130,7 @@ def main():
             continue
 
         # Get per-query settings (depth, filters, output language)
-        settings = get_query_settings()
+        settings = get_query_settings(query)
 
         run_orchestra_query(orchestra, query, settings)
 

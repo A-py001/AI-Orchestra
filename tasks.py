@@ -1,10 +1,11 @@
-﻿"""
+"""
 Tasks Definition for AI Orchestra v2
 Coordinates the sequential workflow with customizable thinking depth,
 domain/language filters, and output language.
 """
 from crewai import Task, Agent
 from typing import Dict, Any, Optional
+from tools.language_detector import get_localized_profile, normalize_language
 
 
 def _build_filter_instructions(settings: Dict[str, Any]) -> str:
@@ -56,12 +57,19 @@ def create_solve_task(agent: Agent, query: str, research_task: Task, settings: O
     settings = settings or {}
     profile = settings.get("depth_profile", {})
     solve_instruction = profile.get("solve_instruction", "Analyze step-by-step and deliver a proven solution.")
+    output_language = settings.get("output_language", "en")
+    lang_code, lang_name = normalize_language(output_language)
+
+    lang_hint = ""
+    if lang_code != "en":
+        lang_hint = f"\nNote: The target output language for the final report is {lang_name}. Ensure your logical deductions and core steps are clearly stated so the Writer can deliver them cleanly in {lang_name}."
 
     return Task(
         description=(
             f"User Challenge: '{query}'\n\n"
             f"Analytical Directives:\n"
-            f"{solve_instruction}\n\n"
+            f"{solve_instruction}\n"
+            f"{lang_hint}\n\n"
             f"Using the research dossier provided by the Researcher Agent:\n"
             f"1. Critically analyze the empirical evidence and findings.\n"
             f"2. Apply rigorous reasoning to solve the problem step-by-step.\n"
@@ -81,31 +89,32 @@ def create_write_task(agent: Agent, query: str, research_task: Task, solve_task:
     profile = settings.get("depth_profile", {})
     write_instruction = profile.get("write_instruction", "Compose a well-structured executive report.")
     output_language = settings.get("output_language", "en")
+    lang_code, _ = normalize_language(output_language)
+    loc_profile = get_localized_profile(lang_code)
 
-    lang_instruction = ""
-    if output_language and output_language.lower() != "en":
-        lang_instruction = f"\nCRITICAL: The ENTIRE report MUST be written in '{output_language}' language. All headings, body text, summaries, and recommendations must be in '{output_language}'. Only source titles and URLs may remain in their original language."
+    formatted_sections = "\n".join(f"   {s}" for s in loc_profile["section_headers"])
+
+    final_anchor = (
+        f"\n\n*** STRICT FINAL DIRECTIVE: LANGUAGE ENFORCEMENT ***\n"
+        f"Target Output Language: {loc_profile['lang_name']} ({lang_code})\n"
+        f"{loc_profile['mandate']}\n"
+        f"You MUST format the report using these exact localized sections:\n"
+        f"{formatted_sections}\n"
+        f"Begin immediately with the localized title. Absolutely NO English headers or body text allowed."
+    )
 
     return Task(
         description=(
             f"Original Query: '{query}'\n\n"
             f"Writing Directives:\n"
-            f"{write_instruction}\n"
-            f"{lang_instruction}\n\n"
+            f"{write_instruction}\n\n"
             f"Craft the definitive report based on the Solver's solution and Researcher's sources:\n"
             f"1. Compose a polished, engaging report in clean Markdown.\n"
-            f"2. Include these sections:\n"
-            f"   - Executive Title\n"
-            f"   - Executive Summary\n"
-            f"   - Key Findings & Evidence Analysis\n"
-            f"   - In-Depth Solution & Step-by-Step Breakdown\n"
-            f"   - Practical Takeaways & Recommendations\n"
-            f"   - Verified Sources & Bibliography (with Title, Type, and URL)\n"
-            f"3. Tone: authoritative, clear, professional, and free of fluff."
+            f"2. Follow the required section structure strictly.\n"
+            f"3. Tone: authoritative, clear, professional, and free of fluff.\n"
+            f"{final_anchor}"
         ),
-        expected_output=(
-            "A complete, beautifully formatted Markdown report ready for publication, with full source citations and actionable conclusions."
-        ),
+        expected_output=loc_profile["expected_output"],
         agent=agent,
         context=[research_task, solve_task]
     )

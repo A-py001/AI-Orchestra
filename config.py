@@ -20,6 +20,7 @@ from rich.prompt import Prompt, Confirm
 from rich.table import Table
 
 from tools.ollama_detector import detect_ollama, ensure_ollama_service
+from tools.language_detector import detect_language, normalize_language
 
 console = Console()
 ENV_FILE = ".env"
@@ -397,13 +398,17 @@ DEPTH_PROFILES = {
     },
 }
 
-def get_query_settings() -> dict:
-    """Prompt user for per-query customization: thinking depth, filters, output language."""
+def get_query_settings(query: str = "") -> dict:
+    """Prompt user for per-query customization: thinking depth, filters, output language with auto-detection."""
     console.print(Panel.fit(
         "[bold cyan]⚙️  Symphony Settings[/bold cyan]\n"
         "[dim]Configure thinking depth, search filters, and output language for this query.[/dim]",
         border_style="yellow"
     ))
+
+    # Auto-detect language from query
+    detected_code = detect_language(query) if query else "en"
+    detected_code, detected_name = normalize_language(detected_code)
 
     # 1. Thinking Depth
     console.print("\n[bold]Thinking Depth:[/bold]")
@@ -421,8 +426,17 @@ def get_query_settings() -> dict:
     if language_filter.lower() == "all":
         language_filter = ""
 
-    # 3. Output Language
-    output_language = Prompt.ask("  Report output language (e.g. [dim]en, fa, pt[/dim])", default="en").strip()
+    # 3. Output Language (with auto-detection default)
+    console.print(f"\n[bold]Output Language:[/bold] [dim](Auto-detected from query: [bold green]{detected_name}[/bold green])[/dim]")
+    output_language_input = Prompt.ask(
+        f"  Report output language (e.g. [dim]fa, en, pt, de[/dim])",
+        default=detected_code
+    ).strip()
+
+    if not output_language_input or output_language_input.lower() == "auto":
+        output_language, out_display = detected_code, detected_name
+    else:
+        output_language, out_display = normalize_language(output_language_input)
 
     settings = {
         "depth": depth,
@@ -439,7 +453,7 @@ def get_query_settings() -> dict:
         summary_parts.append(f"Domains: {domain_filter}")
     if language_filter:
         summary_parts.append(f"Source Lang: {language_filter}")
-    summary_parts.append(f"Output Lang: {output_language}")
+    summary_parts.append(f"Output Lang: {out_display} ({output_language})")
     console.print(f"\n[dim]→ Settings: {' | '.join(summary_parts)}[/dim]")
 
     return settings

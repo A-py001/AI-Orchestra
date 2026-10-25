@@ -102,9 +102,10 @@ class AIOrchestra:
         start_time = time.time()
 
         # 1. Assemble Musicians (Agents)
+        out_lang = settings.get("output_language", "en")
         searcher = create_searcher_agent(llm=self.search_llm)
         solver = create_solver_agent(llm=self.solver_llm)
-        writer = create_writer_agent(llm=self.writer_llm)
+        writer = create_writer_agent(llm=self.writer_llm, language=out_lang)
 
         # 2. Assign Movements (Tasks) with settings
         task_research = create_research_task(searcher, query, settings)

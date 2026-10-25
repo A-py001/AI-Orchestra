@@ -1,4 +1,4 @@
-﻿"""
+"""
 Agents Definition for AI Orchestra
 Defines the specialized multi-agent roles:
 - Searcher Agent (First Violin / Credible Source Scout)
@@ -8,6 +8,7 @@ Defines the specialized multi-agent roles:
 from typing import List, Optional
 from crewai import Agent, LLM
 from tools.search_tool import search_credible_sources
+from tools.language_detector import get_localized_profile, normalize_language
 
 def create_searcher_agent(llm: LLM, custom_tools: Optional[List] = None) -> Agent:
     tools = custom_tools if custom_tools is not None else [search_credible_sources]
@@ -46,18 +47,14 @@ def create_solver_agent(llm: LLM) -> Agent:
         memory=False
     )
 
-def create_writer_agent(llm: LLM) -> Agent:
+def create_writer_agent(llm: LLM, language: str = "en") -> Agent:
+    lang_code, _ = normalize_language(language)
+    profile = get_localized_profile(lang_code)
+
     return Agent(
-        role="Chief Editorial Writer & Communications Maestro",
-        goal=(
-            "Synthesize the analytical solution and verified sources into an eloquent, publication-ready, "
-            "and beautifully structured executive report with clear headings, actionable insights, and complete source references."
-        ),
-        backstory=(
-            "You are the Grand Finale and the Master Scribe of the AI Orchestra. You translate intricate technical breakthroughs "
-            "and deep analytical proofs into engaging, lucid, and flawless prose. Your final report provides an Executive Summary, "
-            "in-depth solution breakdown, practical takeaways, and a structured table of verified sources and links."
-        ),
+        role=profile["writer_role"],
+        goal=profile["writer_goal"],
+        backstory=profile["writer_backstory"],
         tools=[],
         llm=llm,
         verbose=True,
