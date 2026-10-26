@@ -22,21 +22,43 @@ class AIOrchestra:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self._setup_environment()
-        self.search_llm = self._create_llm(
-            model=config.get("SEARCH_MODEL", "gpt-4o-mini"),
-            api_key=config.get("SEARCH_API_KEY", ""),
-            base_url=config.get("SEARCH_BASE_URL") or config.get("OLLAMA_BASE_URL")
-        )
-        self.solver_llm = self._create_llm(
-            model=config.get("SOLVER_MODEL", "gpt-4o"),
-            api_key=config.get("SOLVER_API_KEY", ""),
-            base_url=config.get("SOLVER_BASE_URL") or config.get("OLLAMA_BASE_URL")
-        )
-        self.writer_llm = self._create_llm(
-            model=config.get("WRITER_MODEL", "gpt-4o-mini"),
-            api_key=config.get("WRITER_API_KEY", ""),
-            base_url=config.get("WRITER_BASE_URL") or config.get("OLLAMA_BASE_URL")
-        )
+        # Lazy Loading: LLMs are initialized only on-demand when agents perform
+        self._search_llm: Optional[LLM] = None
+        self._solver_llm: Optional[LLM] = None
+        self._writer_llm: Optional[LLM] = None
+
+    @property
+    def search_llm(self) -> LLM:
+        """Lazy load Searcher LLM only when Researcher agent is invoked."""
+        if self._search_llm is None:
+            self._search_llm = self._create_llm(
+                model=self.config.get("SEARCH_MODEL", "gpt-4o-mini"),
+                api_key=self.config.get("SEARCH_API_KEY", ""),
+                base_url=self.config.get("SEARCH_BASE_URL") or self.config.get("OLLAMA_BASE_URL") or self.config.get("ROUTER_9_BASE_URL")
+            )
+        return self._search_llm
+
+    @property
+    def solver_llm(self) -> LLM:
+        """Lazy load Solver LLM only when Problem Solver agent is invoked."""
+        if self._solver_llm is None:
+            self._solver_llm = self._create_llm(
+                model=self.config.get("SOLVER_MODEL", "gpt-4o"),
+                api_key=self.config.get("SOLVER_API_KEY", ""),
+                base_url=self.config.get("SOLVER_BASE_URL") or self.config.get("OLLAMA_BASE_URL") or self.config.get("ROUTER_9_BASE_URL")
+            )
+        return self._solver_llm
+
+    @property
+    def writer_llm(self) -> LLM:
+        """Lazy load Writer LLM only when Master Scribe agent is invoked."""
+        if self._writer_llm is None:
+            self._writer_llm = self._create_llm(
+                model=self.config.get("WRITER_MODEL", "gpt-4o-mini"),
+                api_key=self.config.get("WRITER_API_KEY", ""),
+                base_url=self.config.get("WRITER_BASE_URL") or self.config.get("OLLAMA_BASE_URL") or self.config.get("ROUTER_9_BASE_URL")
+            )
+        return self._writer_llm
 
     def _setup_environment(self):
         """Set environment variables for third-party tools if present."""
@@ -46,12 +68,21 @@ class AIOrchestra:
             os.environ["TAVILY_API_KEY"] = self.config["TAVILY_API_KEY"]
 
     def _create_llm(self, model: str, api_key: str, base_url: Optional[str] = None) -> LLM:
-        """Create a CrewAI LLM instance with provider auto-resolution, Ollama local support, and environment mapping."""
+        """Create a CrewAI LLM instance with provider auto-resolution, 9Router, Ollama, and cloud mappings."""
         clean_model = model.strip()
         clean_key = api_key.strip() if api_key else ""
 
-        # Local Ollama integration
-        if clean_model.startswith("ollama/") or "ollama" in clean_model.lower() or base_url:
+        # 1. 9Router local gateway integration (default port 20128)
+        if clean_model.startswith("9router/") or (base_url and "20128" in base_url):
+            resolved_url = base_url or os.environ.get("ROUTER_9_BASE_URL", "http://localhost:20128/v1")
+            raw_model = clean_model
+            if raw_model.startswith("9router/"):
+                raw_model = raw_model.replace("9router/", "", 1)
+            target_model = raw_model if raw_model.startswith("openai/") else f"openai/{raw_model}"
+            return LLM(model=target_model, base_url=resolved_url, api_key=clean_key or "9router")
+
+        # 2. Local Ollama integration (default port 11434)
+        if clean_model.startswith("ollama/") or "ollama" in clean_model.lower() or (base_url and "11434" in base_url):
             resolved_url = base_url or os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
             if not clean_model.startswith("ollama/"):
                 clean_model = f"ollama/{clean_model}"

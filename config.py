@@ -20,6 +20,7 @@ from rich.prompt import Prompt, Confirm
 from rich.table import Table
 
 from tools.ollama_detector import detect_ollama, ensure_ollama_service
+from tools.router_detector import detect_9router
 from tools.language_detector import detect_language, normalize_language
 
 console = Console()
@@ -46,6 +47,8 @@ MODEL_TIERS = {
 
 def _detect_provider(model_or_key: str) -> str:
     s = (model_or_key or "").strip()
+    if s.startswith("9router/") or "9router" in s.lower() or "20128" in s:
+        return "9router"
     if s.startswith("ollama/") or "ollama" in s.lower():
         return "ollama"
     if s.startswith("AIzaSy"):
@@ -66,6 +69,9 @@ def show_current_config(config: dict):
 
     def format_status(role_key: str, key_val: str, base_url_val: str = ""):
         m = config.get(role_key, "")
+        if "9router" in m.lower() or (base_url_val and "20128" in base_url_val):
+            url_hint = base_url_val or "http://localhost:20128/v1"
+            return f"[bold cyan]9Router ({url_hint})[/bold cyan]"
         if "ollama" in m.lower():
             url_hint = base_url_val or "http://localhost:11434"
             return f"[bold green]Local ({url_hint})[/bold green]"
@@ -97,12 +103,22 @@ def show_current_config(config: dict):
         m_str = ", ".join(detected_models[:3]) if detected_models else "None loaded"
         if len(detected_models) > 3:
             m_str += f" (+{len(detected_models) - 3} more)"
-        table.add_row("🦙 Local Ollama Service", f"[bold green]Online ({m_str})[/bold green]", "[green]Auto-Detected[/green]")
+        table.add_row("🦙 Local Ollama Service", f"[bold green]Online ({m_str})[/bold green]", "[green]Auto-Detected (port 11434)[/green]")
     elif detected_models:
         m_str = ", ".join(detected_models[:3])
         table.add_row("🦙 Local Ollama Service", f"[bold yellow]Offline on port 11434 ({m_str})[/bold yellow]", "[yellow]Auto-Detected[/yellow]")
     else:
         table.add_row("🦙 Local Ollama Service", "[dim]Not Detected[/dim]", "[dim]N/A[/dim]")
+
+    # 9Router Auto-Detection Badge
+    is_9r_active, router_models = detect_9router()
+    if is_9r_active:
+        r_str = ", ".join(router_models[:3]) if router_models else "Online"
+        if len(router_models) > 3:
+            r_str += f" (+{len(router_models) - 3} combos)"
+        table.add_row("⚡ 9Router Local Gateway", f"[bold cyan]Online ({r_str})[/bold cyan]", "[green]Auto-Detected (port 20128)[/green]")
+    else:
+        table.add_row("⚡ 9Router Local Gateway", "[dim]Offline (port 20128)[/dim]", "[dim]Run '9router' for smart fallback[/dim]")
 
     search_tool_info = "DuckDuckGo / Free Web Search (Active)"
     if config.get("SERPER_API_KEY"):
@@ -160,6 +176,37 @@ def _pick_ollama_model(role_label: str, detected_models: List[str]) -> Tuple[str
     base_url = "http://localhost:11434"
     return clean_model, base_url
 
+def _pick_9router_model(role_label: str, detected_models: List[str]) -> Tuple[str, str]:
+    """
+    Select or input a 9Router model or combo.
+    Returns: (model_name_with_9router_prefix, base_url)
+    """
+    console.print(f"\n[bold cyan]  Select 9Router Model / Combo for {role_label}:[/bold cyan]")
+    choices = []
+    if detected_models:
+        console.print("[dim]  Detected active models/combos in 9Router:[/dim]")
+        for i, m in enumerate(detected_models, 1):
+            choices.append(str(i))
+            rec_tag = " (Active Combo)" if i == 1 else ""
+            console.print(f"    [green]{i}[/green]) [bold]{m}[/bold]{rec_tag}")
+        choices.append(str(len(detected_models) + 1))
+        console.print(f"    [green]{len(detected_models) + 1}[/green]) ✍️  Type other model or alias name")
+        
+        pick = Prompt.ask("  Model choice", choices=choices, default="1")
+        idx = int(pick) - 1
+        if idx < len(detected_models):
+            chosen = detected_models[idx]
+        else:
+            chosen = Prompt.ask("  Enter 9Router model/alias name (e.g. hybrid, gemini-flash, gpt-4o)")
+    else:
+        console.print("[yellow]  No models detected automatically from 9Router (is it running on :20128?).[/yellow]")
+        console.print("[dim]  You can type any combo or model name configured in your 9Router dashboard.[/dim]")
+        chosen = Prompt.ask("  Enter 9Router model/alias name", default="hybrid")
+
+    clean_model = f"9router/{chosen}" if not chosen.startswith("9router/") else chosen
+    base_url = "http://localhost:20128/v1"
+    return clean_model, base_url
+
 def _ask_api_key(prompt_text: str, default_key: str = "") -> str:
     """Prompt for API key cleanly without getpass clipboard eating, showing masked hint."""
     hint = f" [current: {default_key[:4]}...{default_key[-4:]}]" if len(default_key) > 8 else ""
@@ -213,6 +260,7 @@ def get_orchestra_config(force_reconfigure: bool = False) -> dict:
         "WRITER_API_KEY": existing_writer_key,
         "WRITER_BASE_URL": os.environ.get("WRITER_BASE_URL", ""),
         "OLLAMA_BASE_URL": os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"),
+        "ROUTER_9_BASE_URL": os.environ.get("ROUTER_9_BASE_URL", "http://localhost:20128/v1"),
         "SERPER_API_KEY": os.environ.get("SERPER_API_KEY", ""),
         "TAVILY_API_KEY": os.environ.get("TAVILY_API_KEY", ""),
     }
@@ -224,12 +272,13 @@ def get_orchestra_config(force_reconfigure: bool = False) -> dict:
             clean_m = m.lower().replace(" ", "-")
             config[model_key] = f"gemini/{clean_m}"
 
-    # Determine if already configured (either with cloud keys or local ollama models)
-    has_any_keys = bool(
-        ("ollama" in config["SEARCH_MODEL"].lower() or config["SEARCH_API_KEY"]) and
-        ("ollama" in config["SOLVER_MODEL"].lower() or config["SOLVER_API_KEY"]) and
-        ("ollama" in config["WRITER_MODEL"].lower() or config["WRITER_API_KEY"])
-    )
+    # Determine if already configured (either with cloud keys, 9Router, or local ollama models)
+    def _is_role_configured(role_prefix: str) -> bool:
+        m = config[f"{role_prefix}_MODEL"].lower()
+        k = config[f"{role_prefix}_API_KEY"]
+        return bool("ollama" in m or "9router" in m or k)
+
+    has_any_keys = _is_role_configured("SEARCH") and _is_role_configured("SOLVER") and _is_role_configured("WRITER")
 
     if has_any_keys and not force_reconfigure:
         show_current_config(config)
@@ -240,33 +289,62 @@ def get_orchestra_config(force_reconfigure: bool = False) -> dict:
                 ensure_ollama_service()
             return config
 
-    # Scan Ollama
+    # Fast detection of local engines (Ollama and 9Router)
     is_active, detected_models = detect_ollama()
+    is_9r_active, router_models = detect_9router()
+
     ollama_badge = ""
     if is_active:
         ollama_badge = f"\n[green]🟢 Local Ollama Online: Found {len(detected_models)} models ({', '.join(detected_models[:2])})[/green]"
     elif detected_models:
         ollama_badge = f"\n[yellow]🟡 Local Ollama Detected on disk: Found {len(detected_models)} models ({', '.join(detected_models[:2])})[/yellow]"
 
+    router_badge = ""
+    if is_9r_active:
+        r_info = f"Found {len(router_models)} combos/models" if router_models else "Online"
+        router_badge = f"\n[cyan]⚡ 9Router Gateway Online: {r_info} (localhost:20128)[/cyan]"
+    else:
+        router_badge = "\n[dim]⚡ 9Router Gateway: Offline (Run '9router' for multi-account fallback)[/dim]"
+
     console.print(Panel.fit(
-        f"[bold cyan]🎵 AI Orchestra Setup v2.1[/bold cyan]\n"
+        f"[bold cyan]🎵 AI Orchestra Setup v2.2[/bold cyan]\n"
         "Configure API keys and models for each orchestra musician."
-        f"{ollama_badge}\n"
-        "[dim]Tip: You can use Cloud models (Gemini/OpenAI), 100% Local Ollama, or a Hybrid mix![/dim]",
+        f"{ollama_badge}"
+        f"{router_badge}\n"
+        "[dim]Tip: You can use Cloud models, 9Router Gateway, 100% Local Ollama, or a Hybrid mix![/dim]",
         border_style="yellow"
     ))
 
     console.print("\n[bold]Select a configuration mode:[/bold]")
-    console.print("  [bold green]1[/bold green]) 🎼 Full Orchestra / Hybrid Mode (Choose Cloud or Local Ollama per agent)")
+    console.print("  [bold green]1[/bold green]) 🎼 Full Orchestra / Hybrid Mode (Choose Cloud, 9Router, or Ollama per agent)")
     console.print("  [bold green]2[/bold green]) ⚡ Quick OpenAI Mode (One key, choose model tier)")
     console.print("  [bold green]3[/bold green]) 🔷 Quick Google Gemini Mode (One key, choose model tier)")
     console.print("  [bold green]4[/bold green]) 🚀 Quick Groq Mode (One key, choose model tier)")
     console.print("  [bold green]5[/bold green]) 🦙 Quick Ollama Local Mode ([bold cyan]100% Free, Offline & Unlimited[/bold cyan])")
+    console.print("  [bold green]6[/bold green]) ⚡ Quick 9Router Gateway Mode ([bold cyan]Smart Fallback & Multi-Account Quota Shield[/bold cyan])")
 
-    default_choice = "5" if (is_active or detected_models) and not existing_search_key else ("3" if "AIzaSy" in existing_search_key else "1")
-    choice = Prompt.ask("Choose mode", choices=["1", "2", "3", "4", "5"], default=default_choice)
+    default_choice = "6" if is_9r_active else ("5" if (is_active or detected_models) and not existing_search_key else ("3" if "AIzaSy" in existing_search_key else "1"))
+    choice = Prompt.ask("Choose mode", choices=["1", "2", "3", "4", "5", "6"], default=default_choice)
 
-    if choice == "5":
+    if choice == "6":
+        # Quick 9Router Gateway Mode
+        console.print("\n[bold cyan]⚡ Initializing 9Router Local Gateway Mode...[/bold cyan]")
+        chosen_model, base_url = _pick_9router_model("all agents", router_models)
+        r_key = Prompt.ask("  Enter 9Router API Key (press Enter for default)", default="9router").strip() or "9router"
+
+        for role_prefix in ["SEARCH", "SOLVER", "WRITER"]:
+            config[f"{role_prefix}_MODEL"] = chosen_model
+            config[f"{role_prefix}_API_KEY"] = r_key
+            config[f"{role_prefix}_BASE_URL"] = base_url
+
+        config["ROUTER_9_BASE_URL"] = base_url
+
+        if Confirm.ask("Do you want to assign different 9Router models/combos per agent?", default=False):
+            config["SEARCH_MODEL"], config["SEARCH_BASE_URL"] = _pick_9router_model("🎻 Searcher", router_models)
+            config["SOLVER_MODEL"], config["SOLVER_BASE_URL"] = _pick_9router_model("🎹 Solver", router_models)
+            config["WRITER_MODEL"], config["WRITER_BASE_URL"] = _pick_9router_model("🎺 Writer", router_models)
+
+    elif choice == "5":
         # 100% Local Ollama Mode
         console.print("\n[bold green]🦙 Initializing Local Ollama Mode...[/bold green]")
         ensure_ollama_service()
@@ -323,6 +401,7 @@ def get_orchestra_config(force_reconfigure: bool = False) -> dict:
     else:
         # Full Orchestra / Hybrid Mode: configure each agent individually
         _, live_models = detect_ollama()
+        _, live_router_models = detect_9router()
         
         def _configure_individual_agent(role_name: str, default_model: str, default_key: str):
             console.print(f"\n[bold cyan]--- {role_name} ---[/bold cyan]")
@@ -331,17 +410,23 @@ def get_orchestra_config(force_reconfigure: bool = False) -> dict:
             console.print("    [green]2[/green]) ⚡ OpenAI")
             console.print("    [green]3[/green]) 🚀 Groq")
             console.print("    [green]4[/green]) 🦙 Local Ollama (Free & Offline)")
+            console.print("    [green]5[/green]) ⚡ 9Router Local Gateway (Smart Fallback & Multi-Provider)")
             
-            p_pick = Prompt.ask("  Engine", choices=["1", "2", "3", "4"], default="1")
+            p_pick = Prompt.ask("  Engine", choices=["1", "2", "3", "4", "5"], default="1")
             if p_pick == "4":
                 ensure_ollama_service()
                 m_name, b_url = _pick_ollama_model(role_name, live_models)
                 return m_name, "ollama", b_url
+            elif p_pick == "5":
+                m_name, b_url = _pick_9router_model(role_name, live_router_models)
+                r_key = Prompt.ask("  API Key for 9Router (press Enter for default)", default="9router").strip() or "9router"
+                return m_name, r_key, b_url
             else:
                 p_map = {"1": "gemini", "2": "openai", "3": "groq"}
                 l_map = {"1": "Google Gemini", "2": "OpenAI", "3": "Groq"}
                 provider = p_map[p_pick]
-                key = _ask_api_key(f"API Key for {l_map[p_pick]}", default_key if not default_key.startswith("ollama") else "")
+                clean_default_key = default_key if (default_key and not default_key.startswith("ollama") and not default_key.startswith("9router")) else ""
+                key = _ask_api_key(f"API Key for {l_map[p_pick]}", clean_default_key)
                 model = _pick_model_tier(provider, role_name)
                 return model, key, ""
 
